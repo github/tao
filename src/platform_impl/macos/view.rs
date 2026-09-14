@@ -23,6 +23,7 @@ use objc2::{
 };
 use objc2_app_kit::{
   NSApp, NSEvent, NSEventModifierFlags, NSEventPhase, NSView, NSWindow, NSWindowButton,
+  NSWindowStyleMask,
 };
 use objc2_foundation::{
   ns_string, MainThreadMarker, NSAttributedString, NSInteger, NSMutableAttributedString, NSPoint,
@@ -1150,19 +1151,26 @@ extern "C" fn accepts_first_mouse(_this: &Object, _sel: Sel, _event: id) -> BOOL
 }
 
 pub unsafe fn inset_traffic_lights(window: &NSWindow, position: LogicalPosition<f64>) {
+  // AppKit owns the controls in the fullscreen toolbar, which may be in another window.
+  if window.styleMask().contains(NSWindowStyleMask::FullScreen) {
+    return;
+  }
   let (x, y) = (position.x, position.y);
 
-  let close = window
-    .standardWindowButton(NSWindowButton::CloseButton)
-    .unwrap();
-  let miniaturize = window
-    .standardWindowButton(NSWindowButton::MiniaturizeButton)
-    .unwrap();
-  let zoom = window
-    .standardWindowButton(NSWindowButton::ZoomButton)
-    .unwrap();
+  let (Some(close), Some(miniaturize), Some(zoom)) = (
+    window.standardWindowButton(NSWindowButton::CloseButton),
+    window.standardWindowButton(NSWindowButton::MiniaturizeButton),
+    window.standardWindowButton(NSWindowButton::ZoomButton),
+  ) else {
+    return;
+  };
+  if close.window().as_deref() != Some(window) {
+    return;
+  }
 
-  let title_bar_container_view = close.superview().unwrap().superview().unwrap();
+  let Some(title_bar_container_view) = close.superview().and_then(|view| view.superview()) else {
+    return;
+  };
 
   let close_rect = NSView::frame(&close);
   let title_bar_frame_height = close_rect.size.height + y;
@@ -1178,5 +1186,20 @@ pub unsafe fn inset_traffic_lights(window: &NSWindow, position: LogicalPosition<
     let mut rect = NSView::frame(&button);
     rect.origin.x = x + (i as f64 * space_between);
     button.setFrameOrigin(rect.origin);
+  }
+}
+
+// Re-apply the custom traffic light inset stored on the view, if one was set.
+// AppKit resets the buttons to their default position on some events (title
+// change, leaving fullscreen) without triggering a `drawRect:`, so callers use
+// this to restore the configured position afterwards (#13044, #15451).
+pub unsafe fn reapply_traffic_light_inset(ns_window: &NSWindow, ns_view: &NSView) {
+  let state_ptr: *mut c_void = *ns_view.get_ivar("taoState");
+  if state_ptr.is_null() {
+    return;
+  }
+  let state = &*(state_ptr as *mut ViewState);
+  if let Some(position) = state.traffic_light_inset {
+    inset_traffic_lights(ns_window, position);
   }
 }

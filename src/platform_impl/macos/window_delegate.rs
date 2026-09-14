@@ -29,7 +29,7 @@ use crate::{
     event::{EventProxy, EventWrapper},
     ffi::{id, nil, BOOL, NO, YES},
     util::{self, IdRef},
-    view::ViewState,
+    view::{reapply_traffic_light_inset, ViewState},
     window::{get_ns_theme, get_window_id, UnownedWindow},
   },
   window::{Fullscreen, WindowId},
@@ -347,6 +347,7 @@ extern "C" fn window_did_resize(this: &Object, _: Sel, _: id) {
   trace!("Triggered `windowDidResize:`");
   with_state(this, |state| {
     if !state.is_checking_zoomed_in {
+      unsafe { reapply_traffic_light_inset(&state.ns_window, &state.ns_view) };
       state.emit_resize_event();
       state.emit_move_event();
     }
@@ -605,6 +606,9 @@ extern "C" fn window_did_exit_fullscreen(this: &Object, _: Sel, _: id) {
       if let Some(target_fullscreen) = target_fullscreen {
         window.set_fullscreen(target_fullscreen);
       }
+      // Leaving fullscreen resets the traffic light buttons to their default
+      // position without a `drawRect:`, so re-apply the custom inset (#15451).
+      unsafe { reapply_traffic_light_inset(&window.ns_window, &window.ns_view) };
     });
     state.emit_resize_event();
     state.emit_move_event();
