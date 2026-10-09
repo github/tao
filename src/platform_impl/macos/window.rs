@@ -621,6 +621,7 @@ impl UnownedWindow {
     // Set fullscreen mode after we setup everything
     window.set_fullscreen(fullscreen);
     window.set_visible_on_all_workspaces(visible_on_all_workspaces);
+    unsafe { super::view::reapply_traffic_light_inset(&window.ns_window, &window.ns_view) };
 
     // Setting the window as key has to happen *after* we set the fullscreen
     // state, since otherwise we'll briefly see the window at normal size
@@ -1672,7 +1673,9 @@ impl WindowExtMacOS for UnownedWindow {
     unsafe {
       let state_ptr: *mut c_void = *(self.ns_view).get_ivar("taoState");
       let state = &mut *(state_ptr as *mut ViewState);
-      state.traffic_light_inset = Some(position.to_logical(self.scale_factor()));
+      let position = position.to_logical(self.scale_factor());
+      state.traffic_light_inset = Some(position);
+      super::view::inset_traffic_lights(&self.ns_window, position);
     }
   }
 

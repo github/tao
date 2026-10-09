@@ -347,6 +347,7 @@ extern "C" fn window_did_resize(this: &Object, _: Sel, _: id) {
   trace!("Triggered `windowDidResize:`");
   with_state(this, |state| {
     if !state.is_checking_zoomed_in {
+      unsafe { reapply_traffic_light_inset(&state.ns_window, &state.ns_view) };
       state.emit_resize_event();
       state.emit_move_event();
     }
