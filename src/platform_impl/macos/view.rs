@@ -19,7 +19,7 @@ use objc2::{
 };
 use objc2_app_kit::{
   NSApp, NSEvent, NSEventModifierFlags, NSEventPhase, NSResponder, NSTextInputClient, NSView,
-  NSWindow, NSWindowButton,
+  NSWindow, NSWindowButton, NSWindowStyleMask,
 };
 use objc2_foundation::{
   ns_string, MainThreadMarker, NSArray, NSAttributedString, NSAttributedStringKey, NSInteger,
@@ -1015,19 +1015,26 @@ fn mouse_motion(this: &TaoView, event: &NSEvent) {
 }
 
 pub unsafe fn inset_traffic_lights(window: &NSWindow, position: LogicalPosition<f64>) {
+  // AppKit owns the controls in the fullscreen toolbar, which may be in another window.
+  if window.styleMask().contains(NSWindowStyleMask::FullScreen) {
+    return;
+  }
   let (x, y) = (position.x, position.y);
 
-  let close = window
-    .standardWindowButton(NSWindowButton::CloseButton)
-    .unwrap();
-  let miniaturize = window
-    .standardWindowButton(NSWindowButton::MiniaturizeButton)
-    .unwrap();
-  let zoom = window
-    .standardWindowButton(NSWindowButton::ZoomButton)
-    .unwrap();
+  let (Some(close), Some(miniaturize), Some(zoom)) = (
+    window.standardWindowButton(NSWindowButton::CloseButton),
+    window.standardWindowButton(NSWindowButton::MiniaturizeButton),
+    window.standardWindowButton(NSWindowButton::ZoomButton),
+  ) else {
+    return;
+  };
+  if close.window().as_deref() != Some(window) {
+    return;
+  }
 
-  let title_bar_container_view = close.superview().unwrap().superview().unwrap();
+  let Some(title_bar_container_view) = close.superview().and_then(|view| view.superview()) else {
+    return;
+  };
 
   let close_rect = NSView::frame(&close);
   let title_bar_frame_height = close_rect.size.height + y;

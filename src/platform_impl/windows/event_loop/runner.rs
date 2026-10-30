@@ -241,19 +241,22 @@ impl<T> EventLoopRunner<T> {
 
   unsafe fn call_event_handler(&self, event: Event<'_, T>) {
     self.catch_unwind(|| {
-            let mut control_flow = self.control_flow.take();
-            let mut event_handler = self.event_handler.take()
-                .expect("either event handler is re-entrant (likely), or no event handler is registered (very unlikely)");
+      let mut control_flow = self.control_flow.take();
+      match self.event_handler.take() {
+        Some(mut event_handler) => {
+          if let ControlFlow::ExitWithCode(code) = control_flow {
+            event_handler(event, &mut ControlFlow::ExitWithCode(code));
+          } else {
+            event_handler(event, &mut control_flow);
+          }
 
-            if let ControlFlow::ExitWithCode(code) = control_flow  {
-                event_handler(event, &mut ControlFlow::ExitWithCode(code));
-            } else {
-                event_handler(event, &mut control_flow);
-            }
-
-            assert!(self.event_handler.replace(Some(event_handler)).is_none());
-            self.control_flow.set(control_flow);
-        });
+          assert!(self.event_handler.replace(Some(event_handler)).is_none());
+          self.control_flow.set(control_flow);
+        }
+        // Synchronous Win32 dispatch can reenter the callback or arrive after teardown.
+        None => self.control_flow.set(control_flow),
+      }
+    });
   }
 
   unsafe fn dispatch_buffered_events(&self) {
@@ -288,8 +291,8 @@ impl<T> EventLoopRunner<T> {
   /// Destroyed
   /// ```
   ///
-  /// Attempting to transition back to `Uninitialized` will result in a panic. Attempting to
-  /// transition *from* `Destroyed` will also reuslt in a panic. Transitioning to the current
+  /// Attempting to transition back to `Uninitialized` will result in a panic. Other transitions
+  /// from `Destroyed` are ignored. Transitioning to the current
   /// state is a no-op. Even if the `new_runner_state` isn't the immediate next state in the
   /// runner state machine (e.g. `self.runner_state == HandlingMainEvents` and
   /// `new_runner_state == Idle`), the intermediate state transitions will still be executed.
@@ -368,7 +371,8 @@ impl<T> EventLoopRunner<T> {
         self.call_event_handler(Event::LoopDestroyed);
       }
 
-      (Destroyed, _) => panic!("cannot move state from Destroyed"),
+      // Late Win32 messages can request transitions while the loop is tearing down.
+      (Destroyed, _) => self.runner_state.set(Destroyed),
     }
   }
 
@@ -446,5 +450,117 @@ impl<T> BufferedEvent<T> {
         }
       }
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn reentrant_dispatch_preserves_handler_and_control_flow() {
+    let runner = Rc::new(EventLoopRunner::<u8>::new(HWND::default(), 0));
+    let nested_runner = Rc::downgrade(&runner);
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let received_events = events.clone();
+
+    unsafe {
+      runner.set_event_handler(move |event, control_flow| {
+        if let Event::UserEvent(value) = event {
+          received_events.borrow_mut().push(value);
+          *control_flow = ControlFlow::Wait;
+          if value == 1 {
+            nested_runner
+              .upgrade()
+              .unwrap()
+              .call_event_handler(Event::UserEvent(2));
+          }
+        }
+      });
+      runner.call_event_handler(Event::UserEvent(1));
+      assert!(runner.take_panic_error().is_ok());
+      runner.call_event_handler(Event::UserEvent(3));
+    }
+
+    assert!(runner.take_panic_error().is_ok());
+    assert_eq!(*events.borrow(), [1, 3]);
+    assert_eq!(runner.control_flow(), ControlFlow::Wait);
+    assert!(!runner.should_buffer());
+  }
+
+  #[test]
+  fn missing_handler_preserves_control_flow() {
+    let runner = EventLoopRunner::<()>::new(HWND::default(), 0);
+    let control_flow = ControlFlow::WaitUntil(Instant::now());
+    runner.control_flow.set(control_flow);
+
+    unsafe { runner.call_event_handler(Event::MainEventsCleared) };
+
+    assert!(runner.take_panic_error().is_ok());
+    assert_eq!(runner.control_flow(), control_flow);
+  }
+
+  #[test]
+  fn destroyed_runner_ignores_late_transitions() {
+    let runner = EventLoopRunner::<()>::new(HWND::default(), 0);
+    runner.runner_state.set(RunnerState::Destroyed);
+
+    for state in [
+      RunnerState::HandlingMainEvents,
+      RunnerState::HandlingRedrawEvents,
+      RunnerState::Idle,
+      RunnerState::Destroyed,
+    ] {
+      unsafe { runner.move_state_to(state) };
+      assert_eq!(runner.runner_state.get(), RunnerState::Destroyed);
+      assert!(runner.take_panic_error().is_ok());
+    }
+  }
+
+  #[test]
+  fn exit_code_remains_sticky() {
+    let runner = EventLoopRunner::<()>::new(HWND::default(), 0);
+    runner.control_flow.set(ControlFlow::ExitWithCode(23));
+
+    unsafe {
+      runner.set_event_handler(|_, control_flow| {
+        assert_eq!(*control_flow, ControlFlow::ExitWithCode(23));
+        *control_flow = ControlFlow::Poll;
+      });
+      runner.call_event_handler(Event::MainEventsCleared);
+    }
+
+    assert!(runner.take_panic_error().is_ok());
+    assert_eq!(runner.control_flow(), ControlFlow::ExitWithCode(23));
+  }
+
+  #[test]
+  fn ordinary_reentrant_events_remain_buffered() {
+    let runner = Rc::new(EventLoopRunner::<u8>::new(HWND::default(), 0));
+    runner.runner_state.set(RunnerState::HandlingMainEvents);
+    let nested_runner = Rc::downgrade(&runner);
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let received_events = events.clone();
+
+    unsafe {
+      runner.set_event_handler(move |event, control_flow| {
+        if let Event::UserEvent(value) = event {
+          received_events.borrow_mut().push(value);
+          *control_flow = ControlFlow::Wait;
+          if value == 1 {
+            nested_runner
+              .upgrade()
+              .unwrap()
+              .send_event(Event::UserEvent(2));
+          }
+        }
+      });
+      runner.send_event(Event::UserEvent(1));
+    }
+
+    assert!(runner.take_panic_error().is_ok());
+    assert_eq!(*events.borrow(), [1, 2]);
+    assert!(runner.event_buffer.borrow().is_empty());
+    assert_eq!(runner.control_flow(), ControlFlow::Wait);
   }
 }

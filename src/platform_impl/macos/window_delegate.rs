@@ -224,6 +224,7 @@ define_class!(
       trace!("Triggered `windowDidResize:`");
       let state = self.ivars();
       if !state.is_checking_zoomed_in.get() {
+        unsafe { reapply_traffic_light_inset(&state.ns_window, &state.view) };
         state.emit_resize_event();
         state.emit_move_event();
       }
