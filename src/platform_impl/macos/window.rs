@@ -132,10 +132,9 @@ unsafe fn create_view(
   }
 
   if let Some(position) = pl_attribs.traffic_light_inset {
-    let state = ns_view.ivars();
     let scale_factor = NSWindow::backingScaleFactor(ns_window);
     let position = position.to_logical(scale_factor);
-    state.traffic_light_inset.set(Some(position));
+    ns_view.set_traffic_light_inset(Some(position));
   }
 
   // On Mojave, views automatically become layer-backed shortly after being added to
@@ -1642,10 +1641,7 @@ impl WindowExtMacOS for UnownedWindow {
       .ns_view
       .downcast_ref::<TaoView>()
       .unwrap()
-      .ivars()
-      .traffic_light_inset
-      .set(Some(position));
-    unsafe { super::view::inset_traffic_lights(&self.ns_window, position) };
+      .set_traffic_light_inset(Some(position));
   }
 
   #[inline]
@@ -1710,7 +1706,7 @@ impl Drop for UnownedWindow {
   fn drop(&mut self) {
     trace!("Dropping `UnownedWindow` ({:?})", self as *mut _);
     // Close the window if it has not yet been closed.
-    unsafe { util::close_async(&self.ns_window) };
+    unsafe { util::close_async(&self.ns_window, &self.ns_view) };
   }
 }
 

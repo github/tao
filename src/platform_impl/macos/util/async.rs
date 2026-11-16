@@ -17,7 +17,7 @@ use crate::{
   dpi::LogicalSize,
   platform_impl::platform::{
     ffi::{self, id, YES},
-    view::reapply_traffic_light_inset,
+    view::{reapply_traffic_light_inset, TaoView},
     window::SharedState,
   },
 };
@@ -245,10 +245,14 @@ pub unsafe fn set_focus(ns_window: &NSWindow) {
 
 // `close:` is thread-safe, but we want the event to be triggered from the main
 // thread. Though, it's a good idea to look into that more...
-pub unsafe fn close_async(ns_window: &NSWindow) {
+pub unsafe fn close_async(ns_window: &NSWindow, ns_view: &NSView) {
   let ns_window = MainThreadSafe(ns_window.retain());
+  let ns_view = MainThreadSafe(ns_view.retain());
   run_on_main(move || {
     autoreleasepool(move |_| {
+      if let Some(view) = ns_view.downcast_ref::<TaoView>() {
+        view.set_traffic_light_inset(None);
+      }
       ns_window.close();
     });
   });
